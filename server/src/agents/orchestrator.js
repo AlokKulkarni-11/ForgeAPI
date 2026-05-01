@@ -15,8 +15,10 @@ const {
 async function runPipeline(apiId, requirements, userConfig) {
   let iteration = 0;
   const maxIterations = 3;
+  const passScore = 85;
   let currentCode = null;
   let spec = null;
+  let needsGeneration = true;
 
   const log = (agent, level, message, metadata) =>
     logService.save(apiId, agent, level, message, metadata, iteration);
@@ -39,10 +41,19 @@ async function runPipeline(apiId, requirements, userConfig) {
       }
     }
 
-    currentCode = await generationAgent.run(spec, userConfig.framework, currentCode, iteration);
-    await log('generation', 'success', `${Object.keys(currentCode).length} files generated`);
+    if (needsGeneration) {
+      currentCode = await generationAgent.run(spec, userConfig.framework, currentCode, iteration);
+      await log('generation', 'success', `${Object.keys(currentCode).length} files generated`);
+    } else {
+      await log('healing', 'success', `${Object.keys(currentCode).length} healed files ready for testing`);
+    }
+
     await saveApiFiles(apiId, currentCode);
-    await log('generation', 'info', 'Generated files persisted to workspace storage');
+    await log(
+      needsGeneration ? 'generation' : 'healing',
+      'info',
+      `${needsGeneration ? 'Generated' : 'Healed'} files persisted to workspace storage`,
+    );
 
     const sandboxUrl = await sandboxManager.deploy(apiId, currentCode);
     await updateApiStatus(apiId, 'testing', null, sandboxUrl, iteration);
@@ -56,17 +67,18 @@ async function runPipeline(apiId, requirements, userConfig) {
       `${testReport.passedTests}/${testReport.totalTests} tests passed`,
     );
 
-    const secReport = await scoringAgent.run(currentCode, testReport);
+    const secReport = await scoringAgent.run(currentCode, testReport, spec);
     await saveSecurityReport(apiId, secReport, iteration);
     await log(
       'scoring',
-      secReport.score >= 75 ? 'success' : 'warning',
+      secReport.score >= passScore ? 'success' : 'warning',
       `OWASP Score: ${secReport.score}/100`,
+      { passed: secReport.passed, vulnerabilities: secReport.vulnerabilities },
     );
 
-    if (secReport.score >= 75 && testReport.passed) {
-      await updateApiStatus(apiId, 'passed', secReport.score, sandboxUrl, iteration);
-      await log('system', 'success', 'Pipeline complete, all checks passed');
+    if (secReport.score >= passScore && testReport.passed) {
+      await updateApiStatus(apiId, 'live', secReport.score, sandboxUrl, iteration);
+      await log('system', 'success', `Pipeline complete, checks passed with OWASP ${secReport.score}/100`);
       return { success: true, score: secReport.score, sandboxUrl };
     }
 
@@ -78,6 +90,7 @@ async function runPipeline(apiId, requirements, userConfig) {
       );
       const healContext = { testReport, secReport, currentCode };
       currentCode = await healingAgent.run(healContext, spec);
+      needsGeneration = false;
     }
   }
 

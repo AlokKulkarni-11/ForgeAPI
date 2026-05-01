@@ -5,9 +5,11 @@ const SYSTEM_PROMPT = `You are an expert backend developer. You generate complet
 Rules:
 - Generate ALL files needed: server entry point, route files, controller files, model/schema files, middleware, .env.example, README.md
 - Code must be syntactically correct and immediately runnable
+- Server entry must listen on process.env.PORT
 - Include proper error handling, status codes, and response formats
 - Follow RESTful conventions strictly
 - Include input validation
+- Include OWASP-focused security controls using built-in code or listed dependencies: security headers, rate limiting, environment-based secrets, safe CORS, auth middleware when auth is required, and no hardcoded credentials
 - Never use placeholders or TODO comments — everything must be complete
 
 Output ONLY a valid JSON object where keys are file paths and values are complete file contents:
