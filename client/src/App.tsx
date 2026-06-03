@@ -10,6 +10,7 @@ import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
 import CreateApi from './pages/CreateApi';
 import Workspace from './pages/Workspace';
+import WorkspaceNext from './pages/WorkspaceNext';
 import ApiDetails from './pages/ApiDetails';
 import Settings from './pages/Settings';
 
@@ -32,6 +33,7 @@ function App() {
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/create" element={<CreateApi />} />
             <Route path="/workspace/:id" element={<Workspace />} />
+            <Route path="/workspace/:id/next" element={<WorkspaceNext />} />
             <Route path="/api/:id" element={<ApiDetails />} />
             <Route path="/settings" element={<Settings />} />
           </Route>

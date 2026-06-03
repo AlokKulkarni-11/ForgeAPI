@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
@@ -7,28 +7,152 @@ import {
   ArrowRight,
   Bot,
   CheckCircle2,
-  Plus,
-  Trash2,
+  FileCode2,
+  Sparkles,
 } from 'lucide-react';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { apiService } from '../services/api';
-import type { ApiPayload, EntityDefinition, EntityField, FieldType } from '../types/app';
+import type { ApiPayload, EntityDefinition, EndpointDefinition } from '../types/app';
 
-const steps = ['Entities & Fields', 'Endpoints & Auth', 'Config & Preview'];
+const steps = ['Idea', 'Inference', 'Config'];
 
 type AuthType = 'jwt' | 'apikey' | 'none';
 type FrameworkType = 'nodejs' | 'fastapi';
 type DatabaseType = 'postgresql' | 'mongodb';
 type TestMode = 'functional' | 'security' | 'all';
-type EditableFieldKey = 'name' | 'type' | 'required';
 
-const createField = (id: number): EntityField => ({
-  id,
-  name: '',
-  type: 'string',
-  required: false,
-});
+const entityAliases = [
+  'user',
+  'product',
+  'order',
+  'payment',
+  'invoice',
+  'customer',
+  'cart',
+  'task',
+  'project',
+  'ticket',
+  'comment',
+  'message',
+  'post',
+  'book',
+  'author',
+  'student',
+  'teacher',
+  'course',
+  'employee',
+  'company',
+  'vendor',
+  'shipment',
+  'booking',
+  'appointment',
+  'review',
+  'subscription',
+  'report',
+  'notification',
+];
+
+const normalizeEntityName = (value: string) =>
+  value
+    .replace(/[^a-zA-Z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part[0].toUpperCase() + part.slice(1).toLowerCase())
+    .join('') || 'Resource';
+
+const pluralize = (value: string) => {
+  const base = value.trim().toLowerCase();
+
+  if (!base) {
+    return 'resources';
+  }
+
+  if (base.endsWith('y')) {
+    return `${base.slice(0, -1)}ies`;
+  }
+
+  if (base.endsWith('s')) {
+    return base;
+  }
+
+  return `${base}s`;
+};
+
+const defaultFields = (entity: string) => {
+  const key = entity.toLowerCase();
+
+  const presets: Record<string, Array<{ name: string; type: EntityDefinition['fields'][number]['type']; required: boolean }>> = {
+    user: [
+      { name: 'name', type: 'string', required: true },
+      { name: 'email', type: 'string', required: true },
+      { name: 'password', type: 'string', required: false },
+    ],
+    product: [
+      { name: 'name', type: 'string', required: true },
+      { name: 'price', type: 'number', required: true },
+      { name: 'description', type: 'string', required: false },
+    ],
+    order: [
+      { name: 'status', type: 'string', required: true },
+      { name: 'total', type: 'number', required: true },
+      { name: 'userId', type: 'uuid', required: false },
+    ],
+    task: [
+      { name: 'title', type: 'string', required: true },
+      { name: 'description', type: 'string', required: false },
+      { name: 'completed', type: 'boolean', required: false },
+    ],
+    project: [
+      { name: 'name', type: 'string', required: true },
+      { name: 'description', type: 'string', required: false },
+      { name: 'status', type: 'string', required: false },
+    ],
+    book: [
+      { name: 'title', type: 'string', required: true },
+      { name: 'author', type: 'string', required: true },
+      { name: 'isbn', type: 'string', required: false },
+    ],
+  };
+
+  return presets[key] || [
+    { name: 'name', type: 'string', required: true },
+    { name: 'description', type: 'string', required: false },
+  ];
+};
+
+const inferDesign = (name: string, description: string) => {
+  const text = `${name} ${description}`.toLowerCase();
+  const matched = entityAliases.filter((alias) => new RegExp(`\\b${alias}s?\\b`, 'i').test(text));
+  const uniqueEntities = [...new Set((matched.length > 0 ? matched : ['resource']).map(normalizeEntityName))].slice(0, 5);
+
+  const entities: EntityDefinition[] = uniqueEntities.map((entity, entityIndex) => ({
+    id: entityIndex + 1,
+    name: entity,
+    fields: defaultFields(entity).map((field, fieldIndex) => ({
+      id: fieldIndex + 1,
+      name: field.name,
+      type: field.type,
+      required: field.required,
+    })),
+  }));
+
+  const endpoints: EndpointDefinition[] = entities.flatMap((entity) => {
+    const resource = pluralize(entity.name);
+
+    return [
+      { method: 'GET', path: `/${resource}`, entity: entity.name, operation: 'list' },
+      { method: 'POST', path: `/${resource}`, entity: entity.name, operation: 'create' },
+      { method: 'GET', path: `/${resource}/:id`, entity: entity.name, operation: 'get' },
+      { method: 'PUT', path: `/${resource}/:id`, entity: entity.name, operation: 'replace' },
+      { method: 'PATCH', path: `/${resource}/:id`, entity: entity.name, operation: 'update' },
+      { method: 'DELETE', path: `/${resource}/:id`, entity: entity.name, operation: 'delete' },
+    ];
+  });
+
+  return { entities, endpoints };
+};
 
 export default function CreateApi() {
   const navigate = useNavigate();
@@ -36,143 +160,42 @@ export default function CreateApi() {
   const [loading, setLoading] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [entities, setEntities] = useState<EntityDefinition[]>([
-    { id: 1, name: 'User', fields: [{ id: 1, name: 'email', type: 'string', required: true }] },
-  ]);
   const [authType, setAuthType] = useState<AuthType>('jwt');
   const [framework, setFramework] = useState<FrameworkType>('nodejs');
   const [dbType, setDbType] = useState<DatabaseType>('postgresql');
   const [testMode, setTestMode] = useState<TestMode>('functional');
 
-  const addEntity = () => {
-    setEntities((current) => [...current, { id: Date.now(), name: '', fields: [] }]);
-  };
-
-  const removeEntity = (entityId: number) => {
-    setEntities((current) => current.filter((entity) => entity.id !== entityId));
-  };
-
-  const updateEntityName = (entityId: number, value: string) => {
-    setEntities((current) =>
-      current.map((entity) =>
-        entity.id === entityId ? { ...entity, name: value } : entity,
-      ),
-    );
-  };
-
-  const addField = (entityId: number) => {
-    setEntities((current) =>
-      current.map((entity) =>
-        entity.id === entityId
-          ? { ...entity, fields: [...entity.fields, createField(Date.now())] }
-          : entity,
-      ),
-    );
-  };
-
-  const removeField = (entityId: number, fieldId: number) => {
-    setEntities((current) =>
-      current.map((entity) =>
-        entity.id === entityId
-          ? {
-              ...entity,
-              fields: entity.fields.filter((field) => field.id !== fieldId),
-            }
-          : entity,
-      ),
-    );
-  };
-
-  const updateField = (
-    entityId: number,
-    fieldId: number,
-    key: EditableFieldKey,
-    value: string | boolean,
-  ) => {
-    setEntities((current) =>
-      current.map((entity) =>
-        entity.id === entityId
-          ? {
-              ...entity,
-              fields: entity.fields.map((field) =>
-                field.id === fieldId
-                  ? ({
-                      ...field,
-                      [key]: value,
-                    } as EntityField)
-                  : field,
-              ),
-            }
-          : entity,
-      ),
-    );
-  };
+  const inferred = useMemo(() => inferDesign(name, description), [name, description]);
 
   const handleGenerate = async () => {
-    if (!name) {
+    if (!name.trim()) {
       toast.error('API Name is required');
       return;
     }
 
-    const endpoints = entities
-      .map((entity) => [
-        {
-          method: 'GET',
-          path: `/${entity.name.toLowerCase()}s`,
-          entity: entity.name,
-          operation: 'list',
-        },
-        {
-          method: 'POST',
-          path: `/${entity.name.toLowerCase()}s`,
-          entity: entity.name,
-          operation: 'create',
-        },
-        {
-          method: 'GET',
-          path: `/${entity.name.toLowerCase()}s/:id`,
-          entity: entity.name,
-          operation: 'get',
-        },
-        {
-          method: 'PUT',
-          path: `/${entity.name.toLowerCase()}s/:id`,
-          entity: entity.name,
-          operation: 'replace',
-        },
-        {
-          method: 'PATCH',
-          path: `/${entity.name.toLowerCase()}s/:id`,
-          entity: entity.name,
-          operation: 'update',
-        },
-        {
-          method: 'DELETE',
-          path: `/${entity.name.toLowerCase()}s/:id`,
-          entity: entity.name,
-          operation: 'delete',
-        },
-      ])
-      .flat();
+    if (!description.trim()) {
+      toast.error('Short description is required');
+      return;
+    }
 
     const payload: ApiPayload = {
-      name,
-      description,
+      name: name.trim(),
+      description: description.trim(),
       framework,
       database_type: dbType,
       test_mode: testMode,
       auth_type: authType,
-      entities,
-      endpoints,
+      entities: inferred.entities,
+      endpoints: inferred.endpoints,
       validation_rules: [],
-      raw_prompt: `I need a ${framework} REST API with ${entities.map((entity) => entity.name).join(', ')} entities.`,
+      raw_prompt: description.trim(),
     };
 
     setLoading(true);
 
     try {
       const response = await apiService.createApi(payload);
-      toast.success('API requirement saved! Initializing generation agents...');
+      toast.success('ForgeAPI inferred the API structure and started generation.');
       navigate(`/workspace/${response.id}`);
     } catch (error) {
       const message = axios.isAxiosError<{ error?: string }>(error)
@@ -190,7 +213,9 @@ export default function CreateApi() {
     <div className="flex-1 max-w-4xl mx-auto w-full p-6 pb-20 mt-8">
       <div className="mb-8 text-center">
         <h1 className="text-3xl font-bold text-text-primary">Create New API</h1>
-        <p className="text-text-secondary mt-2">Generate a production-ready API via AI Agents</p>
+        <p className="text-text-secondary mt-2">
+          Describe the backend in one sentence and ForgeAPI will infer the entities and routes.
+        </p>
       </div>
 
       <div className="flex justify-between items-center mb-12 relative">
@@ -228,110 +253,39 @@ export default function CreateApi() {
       <div className="bg-background-card border border-background-border rounded-2xl p-6 md:p-8 shadow-xl">
         {step === 1 && (
           <div className="space-y-8 animate-fade-in-up">
-            <div className="grid md:grid-cols-2 gap-4">
+            <div className="grid gap-4">
               <Input
                 label="API Name"
                 placeholder="e.g. E-Commerce Backend"
                 value={name}
                 onChange={(event) => setName(event.target.value)}
               />
-              <Input
-                label="Short Description"
-                placeholder="Handles users and orders"
-                value={description}
-                onChange={(event) => setDescription(event.target.value)}
-              />
+              <div>
+                <label className="block text-sm font-medium text-text-secondary mb-2">
+                  Short Description
+                </label>
+                <textarea
+                  value={description}
+                  onChange={(event) => setDescription(event.target.value)}
+                  placeholder="Example: Build an ecommerce API with users, products, orders and payments."
+                  className="min-h-[140px] w-full rounded-lg border border-background-border bg-background-primary px-4 py-3 text-text-primary outline-none focus:border-accent-primary"
+                />
+              </div>
             </div>
 
-            <div className="pt-4 border-t border-background-border">
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-semibold text-text-primary">Database Entities</h3>
-                <Button type="button" variant="secondary" onClick={addEntity}>
-                  <Plus className="w-4 h-4 mr-2 inline" /> Add Entity
-                </Button>
-              </div>
-
-              {entities.map((entity) => (
-                <div
-                  key={entity.id}
-                  className="border border-background-border rounded-xl p-4 mb-4 bg-background-secondary/30 relative"
-                >
-                  <div className="flex justify-between items-center mb-4">
-                    <Input
-                      className="w-64"
-                      placeholder="Entity Name (e.g. Product)"
-                      value={entity.name}
-                      onChange={(event) => updateEntityName(entity.id, event.target.value)}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => removeEntity(entity.id)}
-                      className="text-text-secondary hover:text-accent-danger"
-                    >
-                      <Trash2 className="w-5 h-5" />
-                    </button>
-                  </div>
-
-                  <div className="space-y-2 mb-4 pl-4 border-l-2 border-background-border">
-                    {entity.fields.map((field) => (
-                      <div key={field.id} className="flex gap-4 items-center">
-                        <Input
-                          className="flex-1"
-                          placeholder="Field name"
-                          value={field.name}
-                          onChange={(event) =>
-                            updateField(entity.id, field.id, 'name', event.target.value)
-                          }
-                        />
-                        <select
-                          className="bg-background-primary border border-background-border rounded-lg px-3 py-2 text-text-primary focus:outline-none focus:border-accent-primary w-32"
-                          value={field.type}
-                          onChange={(event) =>
-                            updateField(
-                              entity.id,
-                              field.id,
-                              'type',
-                              event.target.value as FieldType,
-                            )
-                          }
-                        >
-                          <option value="string">String</option>
-                          <option value="number">Number</option>
-                          <option value="boolean">Boolean</option>
-                          <option value="date">Date</option>
-                          <option value="uuid">UUID</option>
-                        </select>
-                        <label className="flex items-center gap-2 text-sm text-text-secondary w-24">
-                          <input
-                            type="checkbox"
-                            checked={field.required}
-                            onChange={(event) =>
-                              updateField(entity.id, field.id, 'required', event.target.checked)
-                            }
-                            className="accent-accent-primary w-4 h-4 rounded"
-                          />{' '}
-                          Required
-                        </label>
-                        <button
-                          type="button"
-                          onClick={() => removeField(entity.id, field.id)}
-                          className="text-text-secondary hover:text-accent-danger"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    className="text-sm border border-dashed border-background-border"
-                    onClick={() => addField(entity.id)}
-                  >
-                    + Add Field
-                  </Button>
+            <div className="rounded-2xl border border-background-border bg-background-secondary/30 p-5">
+              <div className="flex items-start gap-3">
+                <Sparkles className="w-5 h-5 text-accent-primary mt-0.5" />
+                <div>
+                  <h3 className="text-lg font-semibold text-text-primary">
+                    Description-first generation
+                  </h3>
+                  <p className="text-sm text-text-secondary mt-1">
+                    You no longer need to manually enter entities here. ForgeAPI will infer them from
+                    your short description and you can add editing later.
+                  </p>
                 </div>
-              ))}
+              </div>
             </div>
           </div>
         )}
@@ -362,18 +316,39 @@ export default function CreateApi() {
               </div>
             </div>
 
-            <div className="pt-4 border-t border-background-border">
-              <h3 className="text-lg font-semibold text-text-primary mb-2">Automated Endpoints</h3>
-              <p className="text-text-secondary mb-4 text-sm">
-                ForgeAPI's Generation Agent will automatically scaffold full CRUD controllers for all{' '}
-                {entities.length} entities mapped in Step 1.
-              </p>
-              <div className="flex gap-4 p-4 bg-background-secondary rounded-xl border border-background-border">
-                <Bot className="w-6 h-6 text-accent-primary flex-shrink-0" />
-                <p className="text-sm text-text-primary">
-                  I will analyze your schema and generate exactly {entities.length * 5} optimized
-                  REST endpoints with complete validation guards seamlessly.
-                </p>
+            <div className="grid md:grid-cols-2 gap-6 pt-4 border-t border-background-border">
+              <div className="rounded-xl border border-background-border bg-background-secondary/30 p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <Bot className="w-5 h-5 text-accent-primary" />
+                  <h3 className="text-lg font-semibold text-text-primary">Inferred Entities</h3>
+                </div>
+                <div className="space-y-3">
+                  {inferred.entities.map((entity) => (
+                    <div key={entity.name} className="rounded-lg bg-background-primary px-3 py-3">
+                      <p className="font-semibold text-text-primary">{entity.name}</p>
+                      <p className="text-xs text-text-secondary mt-1">
+                        {entity.fields.map((field) => `${field.name}:${field.type}`).join(', ')}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-background-border bg-background-secondary/30 p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <FileCode2 className="w-5 h-5 text-accent-secondary" />
+                  <h3 className="text-lg font-semibold text-text-primary">Inferred Endpoints</h3>
+                </div>
+                <div className="max-h-[280px] space-y-2 overflow-auto">
+                  {inferred.endpoints.map((endpoint, index) => (
+                    <div
+                      key={`${endpoint.method}-${endpoint.path}-${index}`}
+                      className="rounded-lg bg-background-primary px-3 py-2 font-mono text-xs text-text-primary"
+                    >
+                      {endpoint.method} {endpoint.path}
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
@@ -392,7 +367,7 @@ export default function CreateApi() {
                     <select
                       value={framework}
                       onChange={(event) => setFramework(event.target.value as FrameworkType)}
-                      className="w-full bg-background-primary border border-background-border rounded-lg px-4 py-2 text-text-primary outline-none focus:border-accent-primary pt-2 pb-2"
+                      className="w-full bg-background-primary border border-background-border rounded-lg px-4 py-2 text-text-primary outline-none focus:border-accent-primary"
                     >
                       <option value="nodejs">Node.js (Express)</option>
                       <option value="fastapi">Python (FastAPI)</option>
@@ -405,10 +380,10 @@ export default function CreateApi() {
                     <select
                       value={dbType}
                       onChange={(event) => setDbType(event.target.value as DatabaseType)}
-                      className="w-full bg-background-primary border border-background-border rounded-lg px-4 py-2 text-text-primary outline-none focus:border-accent-primary pt-2 pb-2"
+                      className="w-full bg-background-primary border border-background-border rounded-lg px-4 py-2 text-text-primary outline-none focus:border-accent-primary"
                     >
-                      <option value="postgresql">PostgreSQL (Prisma)</option>
-                      <option value="mongodb">MongoDB (Mongoose)</option>
+                      <option value="postgresql">PostgreSQL</option>
+                      <option value="mongodb">MongoDB</option>
                     </select>
                   </div>
                 </div>
@@ -434,10 +409,10 @@ export default function CreateApi() {
                         </span>
                         <span className="block text-xs text-text-secondary">
                           {mode === 'functional'
-                            ? 'Validate exact endpoint logic and edge cases.'
+                            ? 'Run live endpoint verification against the generated runtime.'
                             : mode === 'security'
-                              ? 'Aggressive injection blocks and Auth bypass scans.'
-                              : 'Complete CI/CD autonomous loop verification.'}
+                              ? 'Keep the focus on security validation and failure surfacing.'
+                              : 'Run the full feedback loop across all generated endpoints.'}
                         </span>
                       </div>
                     </label>
@@ -448,17 +423,18 @@ export default function CreateApi() {
 
             <div className="p-4 bg-[#0d0d12] border border-background-border rounded-xl mt-4">
               <h4 className="text-xs font-mono text-text-secondary uppercase mb-2">
-                AI Agent Requirement Context Payload Preview
+                AI Agent Context Payload Preview
               </h4>
               <pre className="text-xs text-accent-secondary overflow-auto p-2 bg-black/30 rounded">
                 {JSON.stringify(
                   {
                     name,
+                    description,
+                    authType,
                     framework,
                     dbType,
                     testMode,
-                    entityCount: entities.length,
-                    instruction: `Build robust ${framework} layer.`,
+                    inferredEntities: inferred.entities.map((entity) => entity.name),
                   },
                   null,
                   2,

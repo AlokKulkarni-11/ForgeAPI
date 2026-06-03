@@ -1,4 +1,5 @@
 const { model } = require('../config/ai');
+const { inferApiDesign } = require('../services/specInference.service');
 
 const SYSTEM_PROMPT = `You are a backend API specification expert. You receive a structured user input describing their API requirements (entities, fields, endpoints, auth, validation). Your job is to output a clean, complete JSON specification that will be used to generate production-ready REST API code.
 
@@ -65,8 +66,9 @@ const inferOperation = (method = 'GET', path = '/') => {
 };
 
 const buildFallbackSpec = (requirements = {}, userConfig = {}, rawText = '', errorMessage = '') => {
-  const entities = Array.isArray(requirements.entities) ? requirements.entities : [];
-  const endpoints = Array.isArray(requirements.endpoints) ? requirements.endpoints : [];
+  const inferred = inferApiDesign(requirements);
+  const entities = inferred.entities;
+  const endpoints = inferred.endpoints;
   const authType = requirements.auth_type || userConfig.authType || 'none';
 
   return {
@@ -109,6 +111,7 @@ const buildFallbackSpec = (requirements = {}, userConfig = {}, rawText = '', err
 
 const run = async (requirements, userConfig) => {
   const prompt = `${SYSTEM_PROMPT}\n\nUSER INPUT:\nRequirements: ${JSON.stringify(requirements)}\nUser Config: ${JSON.stringify(userConfig)}`;
+  const authType = requirements.auth_type || userConfig.authType || 'none';
 
   try {
     const result = await model.generateContent(prompt);
@@ -116,7 +119,38 @@ const run = async (requirements, userConfig) => {
     const text = stripCodeFences(rawText);
 
     try {
-      return JSON.parse(text);
+      const parsed = JSON.parse(text);
+      const inferred = inferApiDesign({
+        ...requirements,
+        entities: parsed.entities,
+        endpoints: parsed.endpoints,
+      });
+
+      return {
+        ...parsed,
+        entities: inferred.entities.map((entity) => ({
+          name: entity.name,
+          tableName: pluralize(entity.name || 'resource'),
+          fields: Array.isArray(entity.fields)
+            ? entity.fields.map((field) => ({
+                name: field.name || 'name',
+                type: field.type || 'string',
+                required: Boolean(field.required),
+                unique: Boolean(field.unique),
+              }))
+            : [],
+        })),
+        endpoints: inferred.endpoints.map((endpoint) => ({
+          method: String(endpoint.method || 'GET').toUpperCase(),
+          path: endpoint.path || '/',
+          entity: endpoint.entity || inferred.entities?.[0]?.name || 'Resource',
+          operation: endpoint.operation || inferOperation(endpoint.method, endpoint.path),
+          auth: endpoint.auth ?? authType !== 'none',
+          description:
+            endpoint.description ||
+            `${String(endpoint.method || 'GET').toUpperCase()} ${endpoint.path || '/'}`,
+        })),
+      };
     } catch (parseError) {
       console.error('Failed to parse requirement JSON');
       return buildFallbackSpec(requirements, userConfig, rawText, parseError.message);

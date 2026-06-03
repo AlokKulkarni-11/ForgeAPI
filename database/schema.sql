@@ -96,6 +96,9 @@ create table if not exists public.security_reports (
   created_at timestamptz default now()
 );
 
+create index if not exists security_reports_api_latest_idx
+  on public.security_reports (api_id, created_at desc);
+
 -- Test reports
 create table if not exists public.test_reports (
   id uuid primary key default gen_random_uuid(),

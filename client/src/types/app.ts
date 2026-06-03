@@ -42,6 +42,33 @@ export interface ApiRequirements {
   endpoints?: EndpointDefinition[];
 }
 
+export interface ApiTestReport {
+  iteration: number;
+  test_mode: string;
+  total_tests: number;
+  passed_tests: number;
+  failed_tests: number;
+  test_cases: ApiAutoTestResult[];
+  created_at?: string;
+}
+
+export interface ApiSecurityVulnerability {
+  owasp_id?: string;
+  id?: string;
+  name?: string;
+  severity?: 'critical' | 'high' | 'medium' | 'low' | string;
+  endpoint?: string;
+  description?: string;
+}
+
+export interface ApiSecurityReport {
+  iteration: number;
+  score: number;
+  vulnerabilities: ApiSecurityVulnerability[];
+  passed: boolean;
+  created_at?: string;
+}
+
 export interface ApiRecord {
   id: string;
   name: string;
@@ -54,7 +81,10 @@ export interface ApiRecord {
   iteration_count?: number | null;
   sandbox_url?: string | null;
   sandbox_port?: number | null;
+  runtime_base_url?: string | null;
   files?: Record<string, string>;
+  latest_test_report?: ApiTestReport | null;
+  latest_security_report?: ApiSecurityReport | null;
 }
 
 export interface ApiPayload {

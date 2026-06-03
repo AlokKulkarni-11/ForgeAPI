@@ -13,7 +13,7 @@ import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { ExportModal } from '../components/workspace/ExportModal';
 import { apiService } from '../services/api';
-import type { ApiRecord } from '../types/app';
+import type { ApiRecord, ApiSecurityVulnerability } from '../types/app';
 
 type ApiDetailsTab = 'requirements' | 'endpoints' | 'security';
 
@@ -49,6 +49,15 @@ export default function ApiDetails() {
   }
 
   const requirements = api.requirements || {};
+  const latestTestReport = api.latest_test_report;
+  const latestSecurityReport = api.latest_security_report;
+  const latestVulnerabilities = Array.isArray(latestSecurityReport?.vulnerabilities)
+    ? latestSecurityReport.vulnerabilities
+    : [];
+  const formatVulnerabilityLabel = (item: ApiSecurityVulnerability, index: number) =>
+    item.owasp_id || item.id || `#${index + 1}`;
+  const formatVulnerabilityText = (item: ApiSecurityVulnerability) =>
+    item.description || item.name || JSON.stringify(item);
 
   return (
     <div className="flex-1 max-w-7xl mx-auto w-full p-6 md:p-8">
@@ -119,6 +128,43 @@ export default function ApiDetails() {
           </div>
         </div>
       </div>
+
+      {latestTestReport && (
+        <div className="mb-6 rounded-xl border border-background-border bg-background-card px-4 py-3">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-text-secondary">
+            Latest Test Run
+          </p>
+          <div className="mt-3 grid gap-3 md:grid-cols-4">
+            <div className="rounded-lg border border-white/5 bg-background-primary px-3 py-2">
+              <p className="text-[10px] uppercase tracking-[0.18em] text-text-secondary">Mode</p>
+              <p className="mt-1 font-semibold capitalize text-text-primary">{latestTestReport.test_mode}</p>
+            </div>
+            <div className="rounded-lg border border-white/5 bg-background-primary px-3 py-2">
+              <p className="text-[10px] uppercase tracking-[0.18em] text-text-secondary">Total</p>
+              <p className="mt-1 font-semibold text-text-primary">{latestTestReport.total_tests}</p>
+            </div>
+            <div className="rounded-lg border border-white/5 bg-background-primary px-3 py-2">
+              <p className="text-[10px] uppercase tracking-[0.18em] text-text-secondary">Passed</p>
+              <p className="mt-1 font-semibold text-accent-success">{latestTestReport.passed_tests}</p>
+            </div>
+            <div className="rounded-lg border border-white/5 bg-background-primary px-3 py-2">
+              <p className="text-[10px] uppercase tracking-[0.18em] text-text-secondary">Failed</p>
+              <p className="mt-1 font-semibold text-accent-danger">{latestTestReport.failed_tests}</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {api.runtime_base_url && (
+        <div className="mb-6 rounded-xl border border-background-border bg-background-card px-4 py-3">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-text-secondary">
+            Live Runtime Base URL
+          </p>
+          <p className="mt-2 font-mono text-sm text-text-primary break-all">
+            {api.runtime_base_url}
+          </p>
+        </div>
+      )}
 
       <div className="flex items-center gap-6 border-b border-background-border mb-6">
         {[
@@ -231,7 +277,7 @@ export default function ApiDetails() {
                 </p>
               </div>
               <div className="text-5xl font-extrabold text-accent-warning tracking-tighter shadow-lg">
-                {api.owasp_score || '--'}
+                {latestSecurityReport?.score ?? api.owasp_score ?? '--'}
               </div>
             </div>
 
@@ -240,15 +286,29 @@ export default function ApiDetails() {
                 <AlertTriangle className="w-4 h-4 text-accent-danger" /> Latest Vulnerabilities
                 Blocked
               </h4>
-              {api.owasp_score ? (
+              {latestVulnerabilities.length > 0 ? (
                 <div className="space-y-2">
-                  <div className="text-sm flex gap-4 bg-background-primary p-3 rounded-lg border-l-2 border-accent-warning">
-                    <span className="font-mono text-accent-warning font-bold">A04</span>
-                    <span className="text-text-primary">Rate Limiting Enforced correctly</span>
-                  </div>
+                  {latestVulnerabilities.map((item, index) => (
+                    <div
+                      key={`vulnerability-${index}`}
+                      className="text-sm flex gap-4 bg-background-primary p-3 rounded-lg border-l-2 border-accent-warning"
+                    >
+                      <span className="font-mono text-accent-warning font-bold">
+                        {typeof item === 'string'
+                          ? `#${index + 1}`
+                          : formatVulnerabilityLabel(item, index)}
+                      </span>
+                      <span className="text-text-primary">
+                        {typeof item === 'string' ? item : formatVulnerabilityText(item)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : latestSecurityReport?.passed ? (
+                <div className="space-y-2">
                   <div className="text-sm flex gap-4 bg-background-primary p-3 rounded-lg border-l-2 border-accent-success">
-                    <span className="font-mono text-accent-success font-bold">A01</span>
-                    <span className="text-text-primary">BOLA verification passed</span>
+                    <span className="font-mono text-accent-success font-bold">PASS</span>
+                    <span className="text-text-primary">Latest automated security scan passed.</span>
                   </div>
                 </div>
               ) : (

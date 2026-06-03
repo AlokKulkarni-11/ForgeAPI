@@ -7,7 +7,6 @@ import {
   Code2,
   GitBranch,
   HeartPulse,
-  PlayCircle,
   Server,
   ShieldCheck,
   TerminalSquare,
@@ -30,7 +29,7 @@ interface FeatureCard {
 }
 
 const animatedTexts = [
-  'Node.js APIs in 20 seconds.',
+  'Node.js APIs in 60 seconds.',
   'Auto-healed for OWASP security.',
   'Live sandbox. Real endpoints.',
 ];
@@ -176,10 +175,6 @@ export default function Landing() {
   const demoRef = useRef<HTMLElement | null>(null);
   const [revealedFeature, setRevealedFeature] = useState<string | null>(null);
 
-  const scrollToDemo = () => {
-    demoRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
-
   return (
     <div className="relative isolate min-h-[200vh] overflow-hidden bg-[#05060b]">
       <NeonTunnelBackdrop />
@@ -213,13 +208,6 @@ export default function Landing() {
           >
             Start Building Free <ArrowRight className="w-5 h-5" />
           </Link>
-          <button
-            type="button"
-            onClick={scrollToDemo}
-            className="bg-background-secondary hover:bg-background-border border border-background-border text-text-primary px-8 py-4 rounded-xl flex items-center gap-2 transition font-semibold"
-          >
-            <PlayCircle className="w-5 h-5 text-accent-secondary" /> Watch Demo
-          </button>
         </div>
       </section>
 
@@ -341,7 +329,7 @@ export default function Landing() {
 
       <footer className="relative z-10 border-t border-background-border px-4 py-8 text-center">
         <p className="text-text-secondary font-medium">
-          ForgeAPI (c) {new Date().getFullYear()}. Engineered with AI.
+          ForgeAPI (c) {new Date().getFullYear()}. A project by team Illuminati
         </p>
       </footer>
     </div>

@@ -1,4 +1,5 @@
 const { model } = require('../config/ai');
+const { generateLocalProjectFiles } = require('../services/codegen.service');
 
 const SYSTEM_PROMPT = `You are an expert backend developer. You generate complete, production-ready REST API code based on a specification JSON.
 
@@ -46,6 +47,40 @@ const extensionByLanguage = {
   sql: 'sql',
   html: 'html',
   css: 'css',
+};
+
+const PROTECTED_GENERATED_FILES = [
+  /^package\.json$/i,
+  /^\.env\.example$/i,
+  /^README\.md$/i,
+  /^src\/index\.js$/i,
+  /^src\/app\.js$/i,
+  /^src\/routes\/.+\.routes\.js$/i,
+  /^app\/__init__\.py$/i,
+  /^app\/main\.py$/i,
+  /^requirements\.txt$/i,
+  /^forgeapi\/spec\.json$/i,
+  /^runtime\/data\.json$/i,
+];
+
+const isProtectedGeneratedFile = (filepath = '') =>
+  PROTECTED_GENERATED_FILES.some((pattern) => pattern.test(filepath));
+
+const mergeGeneratedFiles = (fallbackFiles = {}, extractedFiles = {}) => {
+  const mergedFiles = { ...fallbackFiles };
+
+  for (const [filepath, content] of Object.entries(extractedFiles)) {
+    if (isProtectedGeneratedFile(filepath) && Object.prototype.hasOwnProperty.call(fallbackFiles, filepath)) {
+      if (String(fallbackFiles[filepath]) !== String(content)) {
+        mergedFiles[`ai-recovered/${filepath}`] = content;
+      }
+      continue;
+    }
+
+    mergedFiles[filepath] = content;
+  }
+
+  return mergedFiles;
 };
 
 const normalizeFileMap = (value) => {
@@ -254,6 +289,7 @@ const extractFileMap = (rawText) => {
 
 const run = async (spec, framework, currentCode, iteration) => {
   const prompt = `${SYSTEM_PROMPT}\n\nSPECIFICATION:\n${JSON.stringify(spec)}\nFRAMEWORK:\n${framework}\nCURRENT ITERATION:\n${iteration}${currentCode ? `\nPREVIOUS CODE:\n${JSON.stringify(currentCode)}` : ''}`;
+  const fallbackFiles = generateLocalProjectFiles(spec, framework);
 
   try {
     const result = await model.generateContent(prompt);
@@ -261,12 +297,13 @@ const run = async (spec, framework, currentCode, iteration) => {
 
     const extractedFiles = extractFileMap(rawText);
     if (extractedFiles) {
-      return extractedFiles;
+      return mergeGeneratedFiles(fallbackFiles, extractedFiles);
     }
 
     const text = stripCodeFences(rawText);
     console.error('Failed to parse generation JSON');
     return {
+      ...fallbackFiles,
       'agent-output.raw.txt': rawText,
       'agent-output.cleaned.txt': text,
       'agent-output.error.txt': [
@@ -282,6 +319,7 @@ const run = async (spec, framework, currentCode, iteration) => {
   } catch (agentError) {
     console.error('Generation agent request failed:', agentError);
     return {
+      ...fallbackFiles,
       'agent-output.error.txt': [
         'ForgeAPI could not fetch a generation response from the AI provider.',
         '',

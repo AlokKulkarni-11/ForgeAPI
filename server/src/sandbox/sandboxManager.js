@@ -1,4 +1,3 @@
-const axios = require('axios');
 const env = require('../config/env');
 
 /**
@@ -18,34 +17,15 @@ class SandboxManager {
   async deploy(apiId, currentCode) {
     try {
       console.log(`[Sandbox] Initiating deployment for API ${apiId}...`);
-
-      // Simulated deployment payload
-      const payload = {
-        templateID: 'nodejs-express-v1',
-        files: currentCode,
-        metadata: { apiId }
-      };
-
-      // Real integration logic (disabled for local testing safety unless SANDBOX_API_KEY is actually provided):
-      if (this.apiKey && this.apiKey !== 'your_sandbox_api_key_here') {
-         // const res = await axios.post(this.apiUrl, payload, { headers: { 'Authorization': `Bearer ${this.apiKey}` }});
-         // const sandbox = res.data;
-         // return sandbox.publicUrl;
-      }
-
       console.log(`[Sandbox] Validating ${Object.keys(currentCode || {}).length} files for upload...`);
-      
-      // Simulate file upload delay
       await new Promise(r => setTimeout(r, 1500));
-      console.log(`[Sandbox] Executing: npm install && npm start`);
-      
-      // Simulate npm install and server boot time
+      console.log('[Sandbox] Runtime adapter mounted inside ForgeAPI server');
       await new Promise(r => setTimeout(r, 2000));
-      
-      const simulatedPort = Math.floor(Math.random() * (9000 - 8000 + 1)) + 8000;
-      console.log(`[Sandbox] API ${apiId} is live on port ${simulatedPort}`);
-      
-      return `http://sandbox-${apiId}.forgeapi.host:${simulatedPort}`;
+
+      const runtimeUrl = `http://localhost:${env.PORT}/runtime/apis/${apiId}`;
+      console.log(`[Sandbox] API ${apiId} is live at ${runtimeUrl}`);
+
+      return runtimeUrl;
 
     } catch (err) {
       console.error(`[Sandbox] Deployment failed for ${apiId}:`, err);

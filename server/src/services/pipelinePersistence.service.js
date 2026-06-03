@@ -44,6 +44,26 @@ async function saveApiFiles(apiId, code) {
   }
 }
 
+async function updateApiRequirements(apiId, requirements) {
+  const payload = {
+    entities: requirements?.entities || [],
+    endpoints: requirements?.endpoints || [],
+    auth_type: requirements?.auth_type || 'none',
+    validation_rules: requirements?.validation_rules || [],
+    test_mode: requirements?.test_mode || 'functional',
+    raw_prompt: requirements?.raw_prompt || null,
+  };
+
+  const { error } = await supabase
+    .from('api_requirements')
+    .update(payload)
+    .eq('api_id', apiId);
+
+  if (error) {
+    throw error;
+  }
+}
+
 async function saveTestReport(apiId, report, iteration) {
   const payload = {
     api_id: apiId,
@@ -76,6 +96,18 @@ async function saveSecurityReport(apiId, report, iteration) {
   if (error) {
     throw error;
   }
+
+  const { error: apiUpdateError } = await supabase
+    .from('apis')
+    .update({
+      owasp_score: payload.score,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', apiId);
+
+  if (apiUpdateError) {
+    throw apiUpdateError;
+  }
 }
 
 async function updateApiStatus(apiId, status, score = null, sandboxUrl = null, iteration = null) {
@@ -107,5 +139,6 @@ module.exports = {
   saveApiFiles,
   saveTestReport,
   saveSecurityReport,
+  updateApiRequirements,
   updateApiStatus,
 };

@@ -1,38 +1,35 @@
-const axios = require('axios');
-const env = require('../config/env');
+const { runEndpointTestSuite } = require('../services/testExecution.service');
 
-const SYSTEM_PROMPT = `You are an API testing specialist. Given an API specification and sandbox port, generate comprehensive test cases and execute them.
-
-For each endpoint, generate:
-1. Happy path test (valid data)
-2. Edge case test (boundary values, empty arrays, max length)
-3. Error case test (missing required fields, invalid types)
-4. If security mode: injection attempts, auth bypass attempts
-
-For each test case output: {name, method, url, headers, body, expectedStatus, actualStatus, passed, responseTime, error}
-
-Output ONLY valid JSON. No explanations.`;
-
-const run = async (port, spec, testMode) => {
+const run = async (baseUrl, spec, testMode) => {
   try {
-    const prompt = `${SYSTEM_PROMPT}\n\nSPECIFICATION:\n${JSON.stringify(spec)}\nPORT:\n${port}\nTEST MODE:\n${testMode}`;
-    
-    // Simulate Ollama payload against a hosted/provider API endpoint.
-    // Normally this would call env.OLLAMA_BASE_URL with env.OLLAMA_MODEL
-    // and, when required by the provider, env.OLLAMA_API_KEY.
-    // For this scaffold we still return a generic report until the real provider call is wired.
+    const endpoints = Array.isArray(spec?.endpoints) ? spec.endpoints : [];
+    const entities = Array.isArray(spec?.entities) ? spec.entities : [];
+    const results = await runEndpointTestSuite({
+      baseUrl,
+      headers: {},
+      endpoints,
+      entities,
+    });
+    const passedTests = results.filter((result) => result.ok).length;
 
-    // Mock response for robustness
     return {
-      passed: true,
-      totalTests: 12,
-      passedTests: 12,
-      failedTests: 0,
-      testCases: []
+      passed: results.length > 0 && passedTests === results.length,
+      totalTests: results.length,
+      passedTests,
+      failedTests: results.length - passedTests,
+      testMode,
+      testCases: results,
     };
   } catch (err) {
     console.error('Testing Agent Error:', err);
-    return { passed: false, totalTests: 1, passedTests: 0, failedTests: 1, testCases: [{ name: 'Test execution', passed: false, error: err.message }] };
+    return {
+      passed: false,
+      totalTests: 1,
+      passedTests: 0,
+      failedTests: 1,
+      testMode,
+      testCases: [{ name: 'Test execution', passed: false, error: err.message }],
+    };
   }
 };
 

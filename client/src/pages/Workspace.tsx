@@ -203,6 +203,8 @@ What to do:
             endpoints={endpoints}
             selectedEndpoint={selectedEndpoint}
             pipelineState={pipelineState}
+            runtimeBaseUrl={currentApi?.runtime_base_url}
+            latestTestReport={currentApi?.latest_test_report}
           />
         </div>
       </div>

@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { FlaskConical, Play, RefreshCw, WandSparkles } from 'lucide-react';
+import { ArrowRight, FlaskConical, Play, RefreshCw, WandSparkles } from 'lucide-react';
 import { apiService } from '../../services/api';
 import type {
+  ApiTestReport,
   ApiAutoTestResponse,
   ApiTestResponse,
   EndpointDefinition,
@@ -16,12 +18,15 @@ interface RequestTesterProps {
   endpoints: EndpointDefinition[];
   selectedEndpoint?: EndpointDefinition | null;
   pipelineState?: string;
+  runtimeBaseUrl?: string | null;
+  latestTestReport?: ApiTestReport | null;
 }
 
 const supportedMethods: HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'];
 type TestMode = 'manual' | 'auto';
 
 const prettyJson = (value: unknown) => JSON.stringify(value, null, 2);
+const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '');
 const normalizeHeaders = (headers: Record<string, unknown> | undefined) =>
   Object.fromEntries(
     Object.entries(headers || {}).map(([key, value]) => [key, String(value ?? '')]),
@@ -32,7 +37,10 @@ export function RequestTester({
   endpoints,
   selectedEndpoint,
   pipelineState,
+  runtimeBaseUrl,
+  latestTestReport,
 }: RequestTesterProps) {
+  const navigate = useNavigate();
   const [baseUrl, setBaseUrl] = useState('http://localhost:3000');
   const [method, setMethod] = useState<HttpMethod>('GET');
   const [path, setPath] = useState('/users');
@@ -55,6 +63,28 @@ export function RequestTester({
     setMethod(supportedMethods.includes(normalizedMethod) ? normalizedMethod : 'GET');
     setPath(endpoint.path);
   }, [endpoints, selectedEndpoint]);
+
+  useEffect(() => {
+    if (!runtimeBaseUrl) {
+      return;
+    }
+
+    setBaseUrl(runtimeBaseUrl);
+  }, [runtimeBaseUrl]);
+
+  const persistedSuiteResponse: ApiAutoTestResponse | null = latestTestReport
+    ? {
+        total: latestTestReport.total_tests,
+        passed: latestTestReport.passed_tests,
+        failed: latestTestReport.failed_tests,
+        results: Array.isArray(latestTestReport.test_cases) ? latestTestReport.test_cases : [],
+      }
+    : null;
+
+  const displayedSuiteResponse = suiteResponse || persistedSuiteResponse;
+  const resolvedPath = path.startsWith('/') ? path : `/${path}`;
+  const requestUrlPreview =
+    mode === 'manual' ? `${trimTrailingSlash(baseUrl || '')}${resolvedPath}` : trimTrailingSlash(baseUrl || '');
 
   const statusTone =
     response == null
@@ -191,8 +221,19 @@ export function RequestTester({
             </p>
           </div>
         </div>
-        <div className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary">
-          {pipelineState || 'pending'}
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => navigate(`/workspace/${apiId}/next`)}
+            className="inline-flex items-center gap-2 px-3 py-1.5 text-xs"
+          >
+            Next Page
+            <ArrowRight className="h-3.5 w-3.5" />
+          </Button>
+          <div className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary">
+            {pipelineState || 'pending'}
+          </div>
         </div>
       </div>
 
@@ -264,6 +305,26 @@ export function RequestTester({
           />
         </div>
 
+        <div className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-text-secondary">
+            Live Runtime Base URL
+          </p>
+          <p className="mt-2 font-mono text-sm break-all text-text-primary">
+            {runtimeBaseUrl || 'Waiting for runtime URL from the backend...'}
+          </p>
+          <p className="mt-2 text-xs text-text-secondary">
+            Use this value as the base URL. ForgeAPI serves the live testable runtime at
+            {' '}
+            <span className="font-mono text-text-primary">/runtime/apis/&lt;apiId&gt;</span>
+            {' '}
+            on the backend host.
+          </p>
+          <p className="mt-2 text-xs text-text-secondary">
+            The tester targets ForgeAPI&apos;s live runtime adapter, which mirrors the saved CRUD
+            entities and endpoints for this API.
+          </p>
+        </div>
+
         {mode === 'manual' ? (
           <>
             <div className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">
@@ -284,6 +345,13 @@ export function RequestTester({
               onChange={(event) => setPath(event.target.value)}
               placeholder="/users"
             />
+
+            <div className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-text-secondary">
+                Request URL Preview
+              </p>
+              <p className="mt-2 font-mono text-sm break-all text-text-primary">{requestUrlPreview}</p>
+            </div>
           </>
         ) : (
           <div className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">
@@ -353,7 +421,7 @@ export function RequestTester({
             </Button>
           )}
           <p className="text-xs text-text-secondary">
-            Use any reachable API base URL. This is ideal for your live sandbox once it is available.
+            Use any reachable API base URL. ForgeAPI now preloads your live runtime endpoint here when available.
           </p>
         </div>
 
@@ -408,30 +476,42 @@ export function RequestTester({
                 </p>
               </div>
               <div className="rounded-full px-3 py-1 text-xs font-bold text-text-secondary bg-background-border">
-                {suiteResponse ? `${suiteResponse.passed}/${suiteResponse.total} passed` : 'Not run yet'}
+                {displayedSuiteResponse
+                  ? `${displayedSuiteResponse.passed}/${displayedSuiteResponse.total} passed`
+                  : 'Not run yet'}
               </div>
             </div>
 
             <div className="space-y-3 p-4">
-              {suiteResponse ? (
+              {displayedSuiteResponse ? (
                 <>
                   <div className="grid grid-cols-3 gap-3 text-xs">
                     <div className="rounded-xl border border-white/5 bg-background-primary px-3 py-2">
                       <span className="block uppercase tracking-[0.18em] text-[10px] text-text-secondary opacity-70">Total</span>
-                      <span className="mt-1 block font-mono text-text-primary">{suiteResponse.total}</span>
+                      <span className="mt-1 block font-mono text-text-primary">{displayedSuiteResponse.total}</span>
                     </div>
                     <div className="rounded-xl border border-white/5 bg-background-primary px-3 py-2">
                       <span className="block uppercase tracking-[0.18em] text-[10px] text-text-secondary opacity-70">Passed</span>
-                      <span className="mt-1 block font-mono text-accent-success">{suiteResponse.passed}</span>
+                      <span className="mt-1 block font-mono text-accent-success">{displayedSuiteResponse.passed}</span>
                     </div>
                     <div className="rounded-xl border border-white/5 bg-background-primary px-3 py-2">
                       <span className="block uppercase tracking-[0.18em] text-[10px] text-text-secondary opacity-70">Failed</span>
-                      <span className="mt-1 block font-mono text-accent-danger">{suiteResponse.failed}</span>
+                      <span className="mt-1 block font-mono text-accent-danger">{displayedSuiteResponse.failed}</span>
                     </div>
                   </div>
 
+                  {latestTestReport?.created_at && !suiteResponse && (
+                    <p className="text-xs text-text-secondary">
+                      Showing the latest saved test run from{' '}
+                      <span className="font-semibold text-text-primary">
+                        {new Date(latestTestReport.created_at).toLocaleString()}
+                      </span>
+                      .
+                    </p>
+                  )}
+
                   <div className="max-h-[320px] space-y-2 overflow-auto">
-                    {suiteResponse.results.map((result, index) => (
+                    {displayedSuiteResponse.results.map((result, index) => (
                       <div
                         key={`${result.endpoint.method}-${result.endpoint.path}-${index}`}
                         className="rounded-xl border border-white/5 bg-background-primary px-3 py-3"

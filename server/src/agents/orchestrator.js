@@ -9,6 +9,7 @@ const {
   saveApiFiles,
   saveTestReport,
   saveSecurityReport,
+  updateApiRequirements,
   updateApiStatus,
 } = require('../services/pipelinePersistence.service');
 
@@ -30,6 +31,14 @@ async function runPipeline(apiId, requirements, userConfig) {
 
     if (iteration === 1) {
       spec = await requirementAgent.run(requirements, userConfig);
+      await updateApiRequirements(apiId, {
+        entities: spec.entities,
+        endpoints: spec.endpoints,
+        auth_type: spec.auth?.type || requirements.auth_type || userConfig.authType || 'none',
+        validation_rules: spec.validation || requirements.validation_rules || [],
+        test_mode: requirements.test_mode || userConfig.testMode || 'functional',
+        raw_prompt: requirements.raw_prompt || requirements.description || requirements.name,
+      });
       if (spec?.__forgeMeta?.fallbackUsed) {
         await log('requirement', 'warning', 'Specification built from fallback normalization', {
           reason: spec.__forgeMeta.reason,
@@ -56,8 +65,12 @@ async function runPipeline(apiId, requirements, userConfig) {
       `${testReport.passedTests}/${testReport.totalTests} tests passed`,
     );
 
-    const secReport = await scoringAgent.run(currentCode, testReport);
+    const secReport = await scoringAgent.run(currentCode, testReport, {
+      apiId,
+      iteration,
+    });
     await saveSecurityReport(apiId, secReport, iteration);
+    await updateApiStatus(apiId, 'testing', secReport.score, sandboxUrl, iteration);
     await log(
       'scoring',
       secReport.score >= 75 ? 'success' : 'warning',
@@ -65,7 +78,7 @@ async function runPipeline(apiId, requirements, userConfig) {
     );
 
     if (secReport.score >= 75 && testReport.passed) {
-      await updateApiStatus(apiId, 'passed', secReport.score, sandboxUrl, iteration);
+      await updateApiStatus(apiId, 'live', secReport.score, sandboxUrl, iteration);
       await log('system', 'success', 'Pipeline complete, all checks passed');
       return { success: true, score: secReport.score, sandboxUrl };
     }

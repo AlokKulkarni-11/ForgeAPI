@@ -3,78 +3,110 @@ const archiver = require('archiver');
 const axios = require('axios');
 const logService = require('../services/log.service');
 const { runPipeline } = require('../agents/orchestrator');
-const { updateApiStatus } = require('../services/pipelinePersistence.service');
-const ALLOWED_TEST_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'];
+const scoringAgent = require('../agents/scoringAgent');
+const {
+  saveSecurityReport,
+  saveTestReport,
+  updateApiStatus,
+} = require('../services/pipelinePersistence.service');
+const {
+  ALLOWED_TEST_METHODS,
+  executeTestRequest,
+  runEndpointTestSuite,
+} = require('../services/testExecution.service');
+const { inferApiDesign } = require('../services/specInference.service');
 
-const SAMPLE_UUID = '11111111-1111-1111-1111-111111111111';
+const buildRuntimeBaseUrl = (req, apiId) => `${req.protocol}://${req.get('host')}/runtime/apis/${apiId}`;
 
-const buildSampleValue = (field = {}) => {
-  switch (field.type) {
-    case 'number':
-      return 42;
-    case 'boolean':
-      return true;
-    case 'date':
-      return new Date().toISOString();
-    case 'uuid':
-      return SAMPLE_UUID;
-    default:
-      return field.name ? `${field.name}-sample` : 'sample';
-  }
-};
-
-const buildSampleBody = (endpoint = {}, entities = []) => {
-  const targetEntity =
-    entities.find((entity) => entity.name === endpoint.entity) ||
-    entities.find((entity) =>
-      endpoint.path?.toLowerCase().includes(`/${String(entity.name).toLowerCase()}s`)
-    );
-
-  if (!targetEntity || !Array.isArray(targetEntity.fields)) {
-    return { name: 'sample-name' };
-  }
-
-  return targetEntity.fields.reduce((acc, field) => {
-    if (field.name === 'id') {
-      return acc;
-    }
-
-    acc[field.name] = buildSampleValue(field);
+const buildFileMap = (fileRows = []) =>
+  (fileRows || []).reduce((acc, row) => {
+    acc[row.filepath] = row.content;
     return acc;
   }, {});
-};
 
-const normalizePathForTest = (path = '/') =>
-  path
-    .replace(/:id\b/g, SAMPLE_UUID)
-    .replace(/:([a-zA-Z_][a-zA-Z0-9_]*)/g, 'sample');
+const hasUsableScore = (score) => Number.isFinite(Number(score)) && Number(score) > 0;
 
-const executeTestRequest = async ({ baseUrl, method = 'GET', path = '/', headers = {}, body }) => {
-  const normalizedMethod = String(method).toUpperCase();
-  const targetUrl = new URL(path || '/', baseUrl).toString();
-  const startedAt = Date.now();
-  const response = await axios.request({
-    url: targetUrl,
-    method: normalizedMethod,
-    headers,
-    data: ['GET', 'HEAD'].includes(normalizedMethod) ? undefined : body,
-    timeout: 15000,
-    validateStatus: () => true,
+const computeLiveSecuritySummary = async (apiId, fallback = {}) => {
+  const [
+    { data: fileRows, error: fileError },
+    { data: latestTestReport, error: testReportError },
+    { data: latestSecurityReport, error: latestSecurityReportError },
+  ] = await Promise.all([
+    supabase
+      .from('api_files')
+      .select('filepath, content')
+      .eq('api_id', apiId)
+      .order('filepath', { ascending: true }),
+    supabase
+      .from('test_reports')
+      .select('iteration, test_mode, test_cases, created_at')
+      .eq('api_id', apiId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from('security_reports')
+      .select('iteration, score, vulnerabilities, passed, created_at')
+      .eq('api_id', apiId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ]);
+
+  if (fileError) {
+    throw fileError;
+  }
+
+  if (testReportError) {
+    console.warn('Latest test report not found for API', apiId);
+  }
+
+  if (latestSecurityReportError) {
+    console.warn('Latest security report not found for API', apiId);
+  }
+
+  const files = buildFileMap(fileRows);
+  const persistedReport = latestSecurityReport || fallback.report || null;
+
+  if (hasUsableScore(persistedReport?.score) || hasUsableScore(fallback.score)) {
+    return {
+      files,
+      score: persistedReport?.score ?? fallback.score,
+      report: persistedReport,
+      latestTestReport: latestTestReport || null,
+    };
+  }
+
+  if (Object.keys(files).length === 0) {
+    return {
+      files,
+      score: null,
+      report: persistedReport,
+      latestTestReport: latestTestReport || null,
+    };
+  }
+
+  const generatedReport = await scoringAgent.run(files, {
+    apiId,
+    testMode: latestTestReport?.test_mode,
+    iteration: latestTestReport?.iteration ?? fallback.iteration ?? 0,
+    testCases: Array.isArray(latestTestReport?.test_cases) ? latestTestReport.test_cases : [],
+  }, {
+    apiId,
+    iteration: latestTestReport?.iteration ?? fallback.iteration ?? 0,
   });
-  const durationMs = Date.now() - startedAt;
+
+  await saveSecurityReport(apiId, generatedReport, latestTestReport?.iteration ?? fallback.iteration ?? 0);
 
   return {
-    ok: response.status >= 200 && response.status < 300,
-    status: response.status,
-    statusText: response.statusText,
-    durationMs,
-    headers: response.headers,
-    data: response.data,
-    request: {
-      method: normalizedMethod,
-      url: targetUrl,
-      path: new URL(targetUrl).pathname,
+    files,
+    score: generatedReport.score,
+    report: {
+      ...generatedReport,
+      iteration: latestTestReport?.iteration ?? fallback.iteration ?? 0,
+      created_at: new Date().toISOString(),
     },
+    latestTestReport: latestTestReport || null,
   };
 };
 
@@ -89,7 +121,31 @@ const getUserApis = async (req, res) => {
       .order('created_at', { ascending: false });
 
     if (error) throw error;
-    res.json(apis);
+    const enrichedApis = await Promise.all(
+      (apis || []).map(async (api) => {
+        try {
+          const liveSecuritySummary = await computeLiveSecuritySummary(api.id, {
+            score: api.owasp_score,
+            iteration: api.iteration_count,
+            created_at: api.updated_at,
+          });
+
+          return {
+            ...api,
+            owasp_score: liveSecuritySummary.score,
+            runtime_base_url: buildRuntimeBaseUrl(req, api.id),
+          };
+        } catch (securityError) {
+          console.warn('Failed to load OWASP score for API', api.id, securityError);
+          return {
+            ...api,
+            runtime_base_url: buildRuntimeBaseUrl(req, api.id),
+          };
+        }
+      }),
+    );
+
+    res.json(enrichedApis);
   } catch (err) {
     console.error('Error fetching APIs:', err);
     res.status(500).json({ error: 'Failed to fetch APIs' });
@@ -136,6 +192,13 @@ const createApi = async (req, res) => {
       name, description, framework, database_type, test_mode, 
       entities, endpoints, auth_type, validation_rules, raw_prompt 
     } = req.body;
+    const inferredDesign = inferApiDesign({
+      name,
+      description,
+      rawPrompt: raw_prompt,
+      entities,
+      endpoints,
+    });
 
     // 1. Insert into apis table
     const { data: apiData, error: apiError } = await supabase
@@ -159,8 +222,8 @@ const createApi = async (req, res) => {
       .from('api_requirements')
       .insert([{
         api_id: apiId,
-        entities,
-        endpoints,
+        entities: inferredDesign.entities,
+        endpoints: inferredDesign.endpoints,
         auth_type,
         validation_rules,
         test_mode,
@@ -175,8 +238,8 @@ const createApi = async (req, res) => {
     const requirements = {
       name,
       description,
-      entities,
-      endpoints,
+      entities: inferredDesign.entities,
+      endpoints: inferredDesign.endpoints,
       auth_type,
       validation_rules,
       raw_prompt,
@@ -235,30 +298,62 @@ const getApiById = async (req, res) => {
       .eq('api_id', id)
       .single();
 
-    const { data: fileRows, error: fileError } = await supabase
-      .from('api_files')
-      .select('filepath, content')
-      .eq('api_id', id)
-      .order('filepath', { ascending: true });
+    const [{ data: latestTestReport, error: testReportError }, { data: latestSecurityReport, error: securityReportError }] =
+      await Promise.all([
+        supabase
+          .from('test_reports')
+          .select('iteration, test_mode, total_tests, passed_tests, failed_tests, test_cases, created_at')
+          .eq('api_id', id)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        supabase
+          .from('security_reports')
+          .select('iteration, score, vulnerabilities, passed, created_at')
+          .eq('api_id', id)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+      ]);
 
     if (reqError) {
       console.warn("Requirements not found for API", id);
     }
 
-    if (fileError) {
-      console.warn('Generated files not found for API', id);
+    if (testReportError) {
+      console.warn('Latest test report not found for API', id);
     }
 
-    const files = (fileRows || []).reduce((acc, row) => {
-      acc[row.filepath] = row.content;
-      return acc;
-    }, {});
+    if (securityReportError) {
+      console.warn('Latest security report not found for API', id);
+    }
+
+    const liveSecuritySummary = await computeLiveSecuritySummary(id, {
+      score: apiData.owasp_score,
+      report: latestSecurityReport || null,
+      iteration: apiData.iteration_count,
+      created_at: apiData.updated_at,
+    });
+
+    const normalizedRequirements = reqData
+      ? {
+          ...reqData,
+          ...inferApiDesign({
+            entities: reqData.entities,
+            endpoints: reqData.endpoints,
+          }),
+        }
+      : null;
 
     // Combine data
     res.json({
       ...apiData,
-      requirements: reqData || null,
-      files,
+      owasp_score: liveSecuritySummary.score,
+      requirements: normalizedRequirements,
+      files: liveSecuritySummary.files,
+      latest_test_report: latestTestReport || liveSecuritySummary.latestTestReport,
+      latest_security_report: liveSecuritySummary.report,
+      runtime_base_url: buildRuntimeBaseUrl(req, id),
     });
   } catch (err) {
     console.error('Error fetching API details:', err);
@@ -367,7 +462,7 @@ const runAutoTestSuite = async (req, res) => {
 
     const { data: apiData, error: apiError } = await supabase
       .from('apis')
-      .select('id, status')
+      .select('id, status, iteration_count')
       .eq('id', id)
       .eq('user_id', userId)
       .single();
@@ -378,7 +473,7 @@ const runAutoTestSuite = async (req, res) => {
 
     const { data: reqData, error: reqError } = await supabase
       .from('api_requirements')
-      .select('entities, endpoints')
+      .select('entities, endpoints, test_mode')
       .eq('api_id', id)
       .single();
 
@@ -386,99 +481,58 @@ const runAutoTestSuite = async (req, res) => {
       return res.status(404).json({ error: 'API requirements not found' });
     }
 
-    const endpoints = Array.isArray(reqData.endpoints) ? reqData.endpoints : [];
-    const entities = Array.isArray(reqData.entities) ? reqData.entities : [];
+    const normalizedDesign = inferApiDesign({
+      entities: reqData.entities,
+      endpoints: reqData.endpoints,
+    });
+    const endpoints = Array.isArray(normalizedDesign.endpoints) ? normalizedDesign.endpoints : [];
+    const entities = Array.isArray(normalizedDesign.entities) ? normalizedDesign.entities : [];
+    const usableEndpoints = endpoints;
 
-    if (endpoints.length === 0) {
+    if (usableEndpoints.length === 0) {
       return res.status(400).json({ error: 'No endpoints available for auto testing' });
     }
 
-    await logService.save(id, 'testing', 'info', `Starting auto test suite for ${endpoints.length} endpoints`, {
+    await logService.save(id, 'testing', 'info', `Starting auto test suite for ${usableEndpoints.length} endpoints`, {
       baseUrl,
     });
 
-    const results = [];
+    const results = await runEndpointTestSuite({
+      baseUrl,
+      headers,
+      endpoints: usableEndpoints,
+      entities,
+    });
 
-    for (const endpoint of endpoints) {
-      const endpointMethod = String(endpoint.method || 'GET').toUpperCase();
-
-      if (!ALLOWED_TEST_METHODS.includes(endpointMethod)) {
-        continue;
-      }
-
-      const testPath = normalizePathForTest(endpoint.path || '/');
-      const body =
-        ['GET', 'HEAD', 'DELETE', 'OPTIONS'].includes(endpointMethod)
-          ? undefined
-          : buildSampleBody(endpoint, entities);
-
-      try {
-        const result = await executeTestRequest({
-          baseUrl,
-          method: endpointMethod,
-          path: testPath,
-          headers,
-          body,
-        });
-
-        await logService.save(
-          id,
-          'testing',
-          result.ok ? 'success' : 'warning',
-          `Auto ${endpointMethod} ${result.request.path} -> ${result.status}`,
-          { operation: endpoint.operation || null, durationMs: result.durationMs },
-        );
-
-        results.push({
-          ...result,
-          endpoint: {
-            method: endpointMethod,
-            path: endpoint.path || '/',
-            operation: endpoint.operation || null,
-          },
-        });
-      } catch (err) {
-        const message = axios.isAxiosError(err)
-          ? err.response?.data?.error || err.message
-          : err.message || 'Auto test request failed';
-
-        await logService.save(
-          id,
-          'testing',
-          'error',
-          `Auto ${endpointMethod} ${testPath} failed`,
-          { error: message },
-        );
-
-        results.push({
-          ok: false,
-          status: 0,
-          statusText: 'REQUEST_FAILED',
-          durationMs: 0,
-          headers: {},
-          data: { error: message },
-          request: {
-            method: endpointMethod,
-            url: new URL(testPath, baseUrl).toString(),
-            path: testPath,
-          },
-          endpoint: {
-            method: endpointMethod,
-            path: endpoint.path || '/',
-            operation: endpoint.operation || null,
-          },
-        });
-      }
+    for (const result of results) {
+      await logService.save(
+        id,
+        'testing',
+        result.ok ? 'success' : 'warning',
+        `Auto ${result.endpoint.method} ${result.request.path} -> ${result.status}`,
+        { operation: result.endpoint.operation || null, durationMs: result.durationMs },
+      );
     }
 
     const passed = results.filter((result) => result.ok).length;
     const failed = results.length - passed;
+    const report = {
+      passed: results.length > 0 && failed === 0,
+      totalTests: results.length,
+      passedTests: passed,
+      failedTests: failed,
+      testMode: reqData.test_mode || 'functional',
+      testCases: results,
+    };
+
+    await saveTestReport(id, report, apiData.iteration_count || 0);
 
     await logService.save(
       id,
       'testing',
       failed === 0 ? 'success' : 'warning',
       `Auto test suite finished: ${passed}/${results.length} passed`,
+      { savedReport: true, testMode: report.testMode },
     );
 
     res.json({
@@ -500,14 +554,32 @@ const runAutoTestSuite = async (req, res) => {
 const exportZip = async (req, res) => {
   try {
     const { id } = req.params;
-    
-    // In reality, fetch files from Supabase Storage or Database.
-    // For ForgeAPI scaffold, we use the simulated output code block:
-    const currentCode = {
-      'server.js': `const express = require('express');\nconst app = express();\n\napp.listen(3000, () => console.log('Server running on port 3000'));`,
-      'package.json': `{"name": "forgeapi-app", "version": "1.0.0", "dependencies": {"express": "^4.18.2"}}`,
-      'README.md': `# Auto-generated by ForgeAPI\n\nRun \`npm install\` then \`npm start\`.`
-    };
+    const userId = req.user.id;
+
+    const { data: apiData, error: apiError } = await supabase
+      .from('apis')
+      .select('id')
+      .eq('id', id)
+      .eq('user_id', userId)
+      .single();
+
+    if (apiError || !apiData) {
+      return res.status(404).json({ error: 'API not found' });
+    }
+
+    const { data: fileRows, error: fileError } = await supabase
+      .from('api_files')
+      .select('filepath, content')
+      .eq('api_id', id)
+      .order('filepath', { ascending: true });
+
+    if (fileError) {
+      throw fileError;
+    }
+
+    if (!fileRows || fileRows.length === 0) {
+      return res.status(404).json({ error: 'No generated files available for export' });
+    }
 
     res.writeHead(200, {
       'Content-Type': 'application/zip',
@@ -517,8 +589,8 @@ const exportZip = async (req, res) => {
     const archive = archiver('zip', { zlib: { level: 9 } });
     archive.pipe(res);
 
-    for (const [filename, content] of Object.entries(currentCode)) {
-      archive.append(content, { name: filename });
+    for (const row of fileRows) {
+      archive.append(row.content, { name: row.filepath });
     }
 
     archive.finalize();
